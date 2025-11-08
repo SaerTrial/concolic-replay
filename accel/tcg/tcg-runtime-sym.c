@@ -31,7 +31,6 @@
 
 #define SymExpr void*
 #include "RuntimeCommon.h"
-
 /* Returning NULL for unimplemented functions is equivalent to concretizing and
  * allows us to run without all symbolic handlers fully implemented. */
 
@@ -209,7 +208,9 @@ void *HELPER(sym_zext_i32_i64)(void *expr)
 {
     if (expr == NULL)
         return NULL;
-
+    #ifdef DEBUG
+    printf("sym_zext_i32_i64 is running \n");
+    #endif
     assert(_sym_bits_helper(expr) == 32);
     return _sym_build_zext(expr, 32); /* extend by 32 */
 }
@@ -291,20 +292,54 @@ void *HELPER(sym_bswap)(void *expr, uint64_t length)
     }
 }
 
+#include "qemu/log.h"
+extern uint32_t mmio_start, mmio_end;
+extern GHashTable *mmio_visited;
+#define DEBUG
 static void *sym_load_guest_internal(CPUArchState *env,
                                      target_ulong addr, void *addr_expr,
                                      uint64_t load_length, uint8_t result_length,
                                      target_ulong mmu_idx)
 {
     /* Try an alternative address */
-    if (addr_expr != NULL)
+    if (addr_expr != NULL) {
+    #ifdef DEBUG
+        printf("%s: Try an alternative address for 0x%x, addr_expr: %s \n", __func__, addr,
+        _sym_expr_to_string(addr_expr));
+        // , _sym_bits_helper(addr_expr), _sym_bits_helper(_sym_build_zext(_sym_build_integer(addr, sizeof(addr) * 8), 32)));
+    #endif
+
+    #if TARGET_LONG_SIZE == 4
+        _sym_push_path_constraint(
+            _sym_build_equal(
+                addr_expr, _sym_build_zext(_sym_build_integer(addr, sizeof(addr) * 8), 32)),
+            true, get_pc(env));
+    #elif TARGET_LONG_SIZE == 8
         _sym_push_path_constraint(
             _sym_build_equal(
                 addr_expr, _sym_build_integer(addr, sizeof(addr) * 8)),
-            true, get_pc(env));
+            true, get_pc(env));     
+    #else
+        
+    #endif
+    }
 
-    void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
-    void *memory_expr = _sym_read_memory((uint8_t*)host_addr, load_length, true);
+    void *memory_expr = NULL;
+    void *host_addr = NULL;
+
+    if(addr >= mmio_start && addr < mmio_end) {
+        // assume unassigned_mem_read executed beforehand, then we have a pointer in the hash table
+        uint64_t* global_val = NULL;
+        global_val = g_hash_table_lookup(mmio_visited, (gpointer)((uint64_t)addr));
+        host_addr = (void*)global_val;
+        memory_expr = _sym_read_memory((uint8_t*)host_addr, load_length, true);
+        qemu_log_mask(LOG_GUEST_ERROR,
+            "%s: getting memory_expr %s (load_length:0x%lx) at the mmio addr: 0x%x\n", __func__, memory_expr? _sym_expr_to_string(memory_expr) : "empty sym expr", load_length,
+            (uint32_t)addr);
+    }else{
+        host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
+        memory_expr = _sym_read_memory((uint8_t*)host_addr, load_length, true);
+    }
 
     if (load_length == result_length || memory_expr == NULL)
         return memory_expr;
@@ -332,13 +367,32 @@ static void sym_store_guest_internal(CPUArchState *env,
                                      uint64_t length, target_ulong mmu_idx)
 {
     /* Try an alternative address */
-    if (addr_expr != NULL)
+    if (addr_expr != NULL) {
+        #if TARGET_LONG_SIZE == 4
+        _sym_push_path_constraint(
+            _sym_build_equal(
+                addr_expr, _sym_build_zext(_sym_build_integer(addr, sizeof(addr) * 8), 32)),
+                true, get_pc(env));
+        #elif  TARGET_LONG_SIZE == 8
         _sym_push_path_constraint(
             _sym_build_equal(
                 addr_expr, _sym_build_integer(addr, sizeof(addr) * 8)),
-            true, get_pc(env));
+                true, get_pc(env));
+        #else
+        #endif
+    }
 
-    void *host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
+    void *host_addr = NULL;
+
+    if(addr >= mmio_start && addr < mmio_end) {
+        // FIXME: clean symbolic expr whenever a write occurs, and this address stores a concrete value.
+        host_addr = g_hash_table_lookup(mmio_visited, (gpointer)((uint64_t)addr));
+        if (host_addr != NULL)
+            _sym_memset((uint8_t*)host_addr, 0, length);
+        return ;
+    }
+
+    host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
     _sym_write_memory((uint8_t*)host_addr, length, value_expr, true);
 }
 
@@ -567,7 +621,12 @@ static void *sym_setcond_internal(CPUArchState *env,
 {
     BINARY_HELPER_ENSURE_EXPRESSIONS;
 
+
     void *condition_symbol = build_and_push_path_constraint(env, arg1_expr, arg2_expr, comparison_operator, is_taken);
+
+    printf("%s: [0x%x] concretized sym expr: %s\n",
+                     __func__, (uint32_t)get_pc(env), _sym_expr_to_string(condition_symbol));
+
 
     assert(result_bits > 1);
     return _sym_build_zext(_sym_build_bool_to_bit(condition_symbol),

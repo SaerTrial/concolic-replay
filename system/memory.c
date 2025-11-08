@@ -49,6 +49,7 @@ static QTAILQ_HEAD(, AddressSpace) address_spaces
     = QTAILQ_HEAD_INITIALIZER(address_spaces);
 
 static GHashTable *flat_views;
+extern GHashTable *mmio_visited;
 
 typedef struct AddrRange AddrRange;
 
@@ -1306,6 +1307,62 @@ static void iommu_memory_region_initfn(Object *obj)
     mr->is_iommu = true;
 }
 
+#define DEBUG_UNASSIGNED
+#define SymExpr void*
+#include "RuntimeCommon.h"
+extern uint32_t g_concolic;
+
+
+static uint64_t symbolize_mem_read(void *opaque, hwaddr addr,
+                                    unsigned size)
+{
+    //FIXME: Not fully sure other cases in size. Assume 32bit for now.
+    #if TARGET_LONG_SIZE==8
+    uint64_t* global_val = NULL;
+    if(! (global_val = g_hash_table_lookup(mmio_visited, (gpointer)addr))) {
+        global_val = g_malloc0(sizeof(uint64_t));
+        
+        *global_val = 0xdeadbeef12345678;
+        g_hash_table_insert(mmio_visited, (gpointer)addr, (gpointer)global_val);
+        symcc_make_symbolic(global_val, sizeof(uint64_t));
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: symbolize mmio read at addr:0x%x with size:%d, physical addr: %p\n",
+                    __func__, (uint32_t)addr, size, global_val);
+    }else{
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: mmio addr:0x%x has been symbolized, physical addr: %p\n",
+                    __func__, (uint32_t)addr, (gpointer)global_val);
+    }
+    #elif TARGET_LONG_SIZE==4
+    uint32_t* global_val = NULL;
+    if(! (global_val = g_hash_table_lookup(mmio_visited, (gpointer)addr))) {
+        global_val = g_malloc0(sizeof(uint32_t));
+        *global_val = 0xdeadbeef;
+        g_hash_table_insert(mmio_visited, (gpointer)addr, (gpointer)global_val);
+        symcc_make_symbolic(global_val, sizeof(uint32_t));
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: symbolize mmio read at addr:0x%x with size:%d, physical addr: %p\n",
+                    __func__, (uint32_t)addr, size, (gpointer)global_val);
+    }else{
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: mmio addr:0x%x has been symbolized, physical addr: %p\n",
+                    __func__, (uint32_t)addr, (gpointer)global_val);
+    }    
+    #else
+        return 0;
+    #endif
+
+#ifdef DEBUG_UNASSIGNED
+    GHashTableIter iter;
+    uint32_t addr_iter;
+    uint64_t* val;
+    g_hash_table_iter_init(&iter, mmio_visited);
+    while (g_hash_table_iter_next(&iter, (gpointer)&addr_iter, (gpointer)&val)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+            "%s: iterated MMIO 0x%x is symbolized with val: 0x%lx \n", __func__, addr_iter, *val);
+    }   
+#endif              
+
+    assert (global_val != NULL);
+    return *global_val;
+}
+
 static uint64_t unassigned_mem_read(void *opaque, hwaddr addr,
                                     unsigned size)
 {
@@ -1313,6 +1370,22 @@ static uint64_t unassigned_mem_read(void *opaque, hwaddr addr,
     printf("Unassigned mem read " HWADDR_FMT_plx "\n", addr);
 #endif
     return 0;
+}
+
+static void symbolize_mem_write(void *opaque, hwaddr addr,
+                                 uint64_t val, unsigned size)
+{
+    uint64_t* value = NULL;
+
+    qemu_log_mask(LOG_GUEST_ERROR, "%s: write: addr=0x%x val=0x%lx\n",
+                  __func__, (uint32_t)addr, (uint64_t)val);
+
+    if( (value = g_hash_table_lookup(mmio_visited, (gpointer)addr))) {
+        *value = val;
+        g_hash_table_replace(mmio_visited, (gpointer)addr, (gpointer)value);
+        qemu_log_mask(LOG_GUEST_ERROR,
+            "%s: symbolized MMIO 0x%x is replaced with val: 0x%lx \n", __func__, (uint32_t)addr, *value);
+    }
 }
 
 static void unassigned_mem_write(void *opaque, hwaddr addr,
@@ -1437,6 +1510,8 @@ static MemTxResult memory_region_dispatch_read1(MemoryRegion *mr,
     }
 }
 
+extern uint32_t mmio_start, mmio_end;
+
 MemTxResult memory_region_dispatch_read(MemoryRegion *mr,
                                         hwaddr addr,
                                         uint64_t *pval,
@@ -1452,7 +1527,15 @@ MemTxResult memory_region_dispatch_read(MemoryRegion *mr,
                                            pval, op, attrs);
     }
     if (!memory_region_access_valid(mr, addr, size, false, attrs)) {
+        
         *pval = unassigned_mem_read(mr, addr, size);
+        if (addr >= mmio_start && addr < mmio_end){
+            if (g_concolic) *pval = symbolize_mem_read(mr, addr, size);
+            // printf("%s: value 0x%x is returned to the address 0x%x, mr->ops->endianness: %d\n", __func__,
+            //      *(uint32_t*)pval, (uint32_t)addr, mr->ops->endianness);
+            adjust_endianness(mr, pval, op);
+            return MEMTX_OK;
+        }
         return MEMTX_DECODE_ERROR;
     }
 
@@ -1502,6 +1585,11 @@ MemTxResult memory_region_dispatch_write(MemoryRegion *mr,
     }
     if (!memory_region_access_valid(mr, addr, size, true, attrs)) {
         unassigned_mem_write(mr, addr, data, size);
+        if (addr >= mmio_start && addr < mmio_end) {
+            adjust_endianness(mr, &data, op);
+            if (g_concolic) symbolize_mem_write(mr, addr, data, size);
+            return MEMTX_OK;
+        }
         return MEMTX_DECODE_ERROR;
     }
 

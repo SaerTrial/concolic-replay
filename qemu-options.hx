@@ -4329,6 +4329,9 @@ SRST
     from ./my\_blob.bin.
 ERST
 
+DEF("replayConf", HAS_ARG, QEMU_OPTION_replayConf, \
+    "-replayConf configurations for concolic replay \n", QEMU_ARCH_ALL)
+
 DEF("serial", HAS_ARG, QEMU_OPTION_serial, \
     "-serial dev     redirect the serial port to char device 'dev'\n",
     QEMU_ARCH_ALL)

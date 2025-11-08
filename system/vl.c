@@ -137,6 +137,8 @@
 
 #define MAX_VIRTIO_CONSOLES 1
 
+const char *replayConf = NULL;
+
 typedef struct BlockdevOptionsQueueEntry {
     BlockdevOptions *bdo;
     Location loc;
@@ -2920,6 +2922,9 @@ void qemu_init(int argc, char **argv)
                     error_report("only 90, 180, 270 deg rotation is available");
                     exit(1);
                 }
+                break;
+            case QEMU_OPTION_replayConf:
+                replayConf = (char *)optarg;
                 break;
             case QEMU_OPTION_kernel:
                 qdict_put_str(machine_opts_dict, "kernel", optarg);

@@ -101,6 +101,11 @@ config INTEGRATOR
     select PL181 # display
     select SMC91C111
 
+config CONCOLIC_REPLAY
+    bool
+    default y
+    depends on TCG && ARM 
+
 config MAINSTONE
     bool
     default y
