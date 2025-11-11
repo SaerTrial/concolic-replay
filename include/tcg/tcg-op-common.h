@@ -12,6 +12,12 @@
 #include "exec/helper-proto-common.h"
 #include "exec/helper-gen-common.h"
 
+
+/* record and replay project */
+typedef uint32_t (*ArchHelper)(CPUState *);
+void gen_aflBBlock(ArchHelper func, CPUState* cpu, uint64_t pc);
+
+
 /* Slightly questionable macros to save typing and for (arguably) clearer code:
  * SYM_HELPER_BINARY_32(add) generates a helper call to "sym_add_i32", expecting
  * TCGv_i32 variables ret, arg1 and arg2 to exist in the environment.

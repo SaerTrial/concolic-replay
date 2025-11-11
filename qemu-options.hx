@@ -4329,6 +4329,9 @@ SRST
     from ./my\_blob.bin.
 ERST
 
+DEF("replayFile", HAS_ARG, QEMU_OPTION_replayFile, \
+    "-replayFile input file for concolic replay \n", QEMU_ARCH_ALL)
+
 DEF("replayConf", HAS_ARG, QEMU_OPTION_replayConf, \
     "-replayConf configurations for concolic replay \n", QEMU_ARCH_ALL)
 

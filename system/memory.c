@@ -1307,11 +1307,11 @@ static void iommu_memory_region_initfn(Object *obj)
     mr->is_iommu = true;
 }
 
-#define DEBUG_UNASSIGNED
+// #define DEBUG_UNASSIGNED
 #define SymExpr void*
 #include "RuntimeCommon.h"
-extern uint32_t g_concolic;
 
+bool getFuzz(uint8_t *buf, uint32_t size);
 
 static uint64_t symbolize_mem_read(void *opaque, hwaddr addr,
                                     unsigned size)
@@ -1320,9 +1320,8 @@ static uint64_t symbolize_mem_read(void *opaque, hwaddr addr,
     #if TARGET_LONG_SIZE==8
     uint64_t* global_val = NULL;
     if(! (global_val = g_hash_table_lookup(mmio_visited, (gpointer)addr))) {
-        global_val = g_malloc0(sizeof(uint64_t));
-        
-        *global_val = 0xdeadbeef12345678;
+        global_val = g_malloc0(sizeof(uint64_t));        
+        getFuzz((uint8_t *)global_val, sizeof(uint64_t));
         g_hash_table_insert(mmio_visited, (gpointer)addr, (gpointer)global_val);
         symcc_make_symbolic(global_val, sizeof(uint64_t));
         qemu_log_mask(LOG_GUEST_ERROR, "%s: symbolize mmio read at addr:0x%x with size:%d, physical addr: %p\n",
@@ -1335,7 +1334,7 @@ static uint64_t symbolize_mem_read(void *opaque, hwaddr addr,
     uint32_t* global_val = NULL;
     if(! (global_val = g_hash_table_lookup(mmio_visited, (gpointer)addr))) {
         global_val = g_malloc0(sizeof(uint32_t));
-        *global_val = 0xdeadbeef;
+        getFuzz((uint8_t *)global_val, sizeof(uint32_t));
         g_hash_table_insert(mmio_visited, (gpointer)addr, (gpointer)global_val);
         symcc_make_symbolic(global_val, sizeof(uint32_t));
         qemu_log_mask(LOG_GUEST_ERROR, "%s: symbolize mmio read at addr:0x%x with size:%d, physical addr: %p\n",
@@ -1530,7 +1529,7 @@ MemTxResult memory_region_dispatch_read(MemoryRegion *mr,
         
         *pval = unassigned_mem_read(mr, addr, size);
         if (addr >= mmio_start && addr < mmio_end){
-            if (g_concolic) *pval = symbolize_mem_read(mr, addr, size);
+            *pval = symbolize_mem_read(mr, addr, size);
             // printf("%s: value 0x%x is returned to the address 0x%x, mr->ops->endianness: %d\n", __func__,
             //      *(uint32_t*)pval, (uint32_t)addr, mr->ops->endianness);
             adjust_endianness(mr, pval, op);
@@ -1587,7 +1586,7 @@ MemTxResult memory_region_dispatch_write(MemoryRegion *mr,
         unassigned_mem_write(mr, addr, data, size);
         if (addr >= mmio_start && addr < mmio_end) {
             adjust_endianness(mr, &data, op);
-            if (g_concolic) symbolize_mem_write(mr, addr, data, size);
+            symbolize_mem_write(mr, addr, data, size);
             return MEMTX_OK;
         }
         return MEMTX_DECODE_ERROR;

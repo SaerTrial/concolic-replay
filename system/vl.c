@@ -137,7 +137,9 @@
 
 #define MAX_VIRTIO_CONSOLES 1
 
+/* record and replay project */
 const char *replayConf = NULL;
+const char *replayFile = NULL;
 
 typedef struct BlockdevOptionsQueueEntry {
     BlockdevOptions *bdo;
@@ -2923,6 +2925,9 @@ void qemu_init(int argc, char **argv)
                     exit(1);
                 }
                 break;
+            case QEMU_OPTION_replayFile:
+                replayFile = (char *)optarg;
+                break;                
             case QEMU_OPTION_replayConf:
                 replayConf = (char *)optarg;
                 break;

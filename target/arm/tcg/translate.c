@@ -8075,12 +8075,41 @@ static void arm_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
     }
 }
 
+#include "qemu/main-loop.h"
+
+void armv7m_nvic_set_pending(NVICState *s, int irq, bool secure);
+extern GHashTable *patched_func_htable;
+static uint32_t arm_helper_func(CPUState *cpu){
+    static uint32_t cnt = 0;
+    CPUARMState *env = cpu_env(cpu);
+    void* element;
+
+    cnt++;
+    
+    qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: runnin at 0x%x ...\n", __func__, env->regs[15]); 
+
+    // TODO: implement a python replacement for a patched function, returning a desired value?
+    if ( (element = g_hash_table_lookup(patched_func_htable, (gpointer)((uint64_t)env->regs[15])))){
+        if (env->thumb)
+            env->regs[15] = env->regs[14] & ~1;
+        else
+            env->regs[15] = env->regs[14];
+        return 1;
+    }
+
+    // TODO: fire an enabled IRQ in a whatever way, e.g., round-robin....
+
+    return 0;
+}
+
+
 static const TranslatorOps arm_translator_ops = {
     .init_disas_context = arm_tr_init_disas_context,
     .tb_start           = arm_tr_tb_start,
     .insn_start         = arm_tr_insn_start,
     .translate_insn     = arm_tr_translate_insn,
     .tb_stop            = arm_tr_tb_stop,
+    .arch_helper        = arm_helper_func,
 };
 
 static const TranslatorOps thumb_translator_ops = {
@@ -8089,6 +8118,7 @@ static const TranslatorOps thumb_translator_ops = {
     .insn_start         = arm_tr_insn_start,
     .translate_insn     = thumb_tr_translate_insn,
     .tb_stop            = arm_tr_tb_stop,
+    .arch_helper        = arm_helper_func,
 };
 
 /* generate intermediate code for basic block 'tb'.  */

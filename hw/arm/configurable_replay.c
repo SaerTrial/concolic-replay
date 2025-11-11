@@ -23,6 +23,69 @@
 #define SYSCLK_FRQ 40000000ULL
 
 extern const char *replayConf;
+extern const char *replayFile;
+GHashTable *patched_func_htable = NULL;
+
+uint8_t *fuzz = NULL;
+uint32_t fuzz_size = 0;
+uint32_t fuzz_cursor = 0;
+static bool input_already_given = false;
+
+bool getFuzz(uint8_t *buf, uint32_t size);
+static void loadFuzz(void);
+
+void loadFuzz(void) {
+        FILE *fp;
+        
+        fp = fopen(replayFile, "rb");
+        if(!fp) {
+                perror(replayFile);
+                exit(1);
+        }
+
+        fseek(fp, 0L, SEEK_END);
+        uint32_t _size = ftell(fp);
+        fuzz_size = _size;
+        fseek(fp, 0L, SEEK_SET); 
+
+        if ( (fuzz = malloc(_size+1)) == NULL ) {
+                exit(1);
+        }
+
+        if (fread(fuzz, _size, 1, fp) == 0) {
+                printf("fread failed\n");
+                exit(1);
+        }
+
+        qemu_log_mask(LOG_GUEST_ERROR,
+                        "%s: read replay input file successfully, size:0x%x\n", __func__, (uint32_t)_size);
+
+        fclose(fp);
+}
+
+
+/* get fuzzing inputs */
+bool getFuzz(uint8_t *buf, uint32_t size) {
+
+        if(!input_already_given){
+                loadFuzz();
+                input_already_given = true;
+        }
+
+        if(size && fuzz_cursor + size <= fuzz_size) {
+                qemu_log_mask(LOG_GUEST_ERROR, "[NATIVE FUZZ] Returning %d fuzz bytes\n", size); 
+                memcpy(buf, &fuzz[fuzz_cursor], size);
+                fuzz_cursor += size;
+                return true;
+        }
+        else {
+                qemu_log_mask(LOG_GUEST_ERROR, "[NATIVE FUZZ] Running out of inputs \n"); 
+                free(fuzz);
+                _exit(0);
+        }
+
+        return false;
+}
 
 static QDict * load_configuration(const char * filename)
 {
@@ -68,7 +131,6 @@ static QDict * load_configuration(const char * filename)
 
 uint32_t mmio_start, mmio_end;
 GHashTable *mmio_visited;
-uint32_t g_concolic = 0;
 
 static void load_ram(QDict * ram_dict) {
         Error *err = NULL;
@@ -139,6 +201,10 @@ static void load_flash(QDict * flash_dict) {
 
 static void configure_mmio(QDict * mmio)
 {
+
+        /*
+        "mmio":{"mmio_start":"0x40000000", "mmio_end": "0x60000000"}
+        */
         mmio_start = strtol( 
                 qstring_get_str(qobject_to(QString, qdict_get(mmio, "mmio_start"))),
                 NULL,
@@ -153,9 +219,48 @@ static void configure_mmio(QDict * mmio)
      
 }
 
+static void create_patch(QDict * patch_entry){
+        if (!patched_func_htable) patched_func_htable = g_hash_table_new(NULL, NULL);
+
+        uint32_t addr = strtol(
+                        qstring_get_str(qobject_to(QString, qdict_get(patch_entry, "addr"))),
+                        NULL,
+                        0);
+        /*
+        "patch": [{"addr": "0x800xxxx", "name": "func1"},
+                {"addr": "0x800xxxx", "name": "func2"}]
+        */
+        void* element = NULL;
+        if(! (element = g_hash_table_lookup(patched_func_htable, (gpointer)((uint64_t)addr)))) {
+                if (qdict_haskey(patch_entry, "name"))
+                element = (void*)qstring_get_str(qobject_to(QString, qdict_get(patch_entry, "name")));
+                g_hash_table_insert(patched_func_htable, (gpointer)((uint64_t)addr), (gpointer)element);
+        }
+}
+
+
+static void print_configuration(void){
+    /* patch functions */
+    GHashTableIter iter;
+    uint32_t addr_iter;
+    const char* func_name;
+    g_hash_table_iter_init(&iter, patched_func_htable);
+    uint32_t cnt = 0;
+
+    qemu_log_mask(LOG_GUEST_ERROR,
+        "%s: --------------------------patch function----------------------------\n", __func__);
+
+    while (g_hash_table_iter_next(&iter, (gpointer)&addr_iter, (gpointer)&func_name)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+        "%s: [%d] addr: 0x%x patched_function: %s \n", __func__, cnt, addr_iter, func_name);
+        cnt++;
+    } 
+
+}
+
 static void configurable_replay_init(MachineState *machine)
 {
-        Clock *sysclk = NULL;//, *refclk = NULL;
+        Clock *sysclk = NULL;
         QDict * conf = NULL;
         DeviceState* armv7m;
         MemoryRegion *system_memory = get_system_memory();
@@ -175,35 +280,34 @@ static void configurable_replay_init(MachineState *machine)
                         load_flash(qobject_to(QDict, entry->value));
                 }else if (!strcmp(entry->key, "mmio")) {
                         configure_mmio(qobject_to(QDict, entry->value));
-                }else if (!strcmp(entry->key, "concolic")) {
-                        g_concolic = qnum_get_int(qobject_to(QNum, entry->value));
-                        printf("concolic: %s\n", g_concolic? "on" : "off");
+                }else if (!strcmp(entry->key, "patch")) {
+                        QList * patches = qobject_to(QList, entry->value);
+                        QListEntry *patch;
+                        QLIST_FOREACH_ENTRY(patches, patch) {
+                                create_patch(qobject_to(QDict, qlist_entry_obj(patch)));
+                        }
                 }
                 entry = qdict_next(conf, entry);
         }
+
+        print_configuration();
+
+        assert(replayFile && "specify an input file");
         
         /* This clock doesn't need migration because it is fixed-frequency */
         sysclk = clock_new(OBJECT(machine), "SYSCLK");
         clock_set_hz(sysclk, SYSCLK_FRQ);
-        // refclk = clock_new(OBJECT(machine), "REFCLK");
-        // clock_set_hz(refclk, SYSCLK_FRQ/8);
-        // refclk = qdev_init_clock_in(OBJECT(machine), "refclk", NULL, NULL, 0);
 
-        if (g_concolic) {
-                mmio_visited = g_hash_table_new(NULL, NULL);
-                /* Initialize the symbolic backend */
-                _sym_initialize();
-        }
+        /* Initialize a global MMIO-access table and the symbolic backend */
+        mmio_visited = g_hash_table_new(NULL, NULL);
+        _sym_initialize();
 
-        //     clock_set_mul_div(refclk, 8, 1);
-        //     clock_set_source(refclk, sysclk);
         armv7m = qdev_new(TYPE_ARMV7M);
         qdev_prop_set_uint32(armv7m, "num-irq", 156);
         qdev_prop_set_uint8(armv7m, "num-prio-bits", 4);
         qdev_prop_set_string(armv7m, "cpu-type", ARM_CPU_TYPE_NAME("cortex-m7"));
         qdev_prop_set_bit(armv7m, "enable-bitband", true);
         qdev_connect_clock_in(armv7m, "cpuclk", sysclk);
-        // qdev_connect_clock_in(armv7m, "refclk", refclk);
 
         object_property_set_link(OBJECT(armv7m), "memory",
                                 OBJECT(system_memory), &error_abort);

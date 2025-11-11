@@ -42,6 +42,10 @@
 #include "internal-common.h"
 #include "internal-target.h"
 
+/* record and replay project */
+static uint32_t bb_cnt = 0;
+void interrupt_firing(void);
+
 /* -icount align implementation. */
 
 typedef struct SyncClocks {
@@ -449,6 +453,7 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
     uintptr_t ret;
     TranslationBlock *last_tb;
     const void *tb_ptr = itb->tc.ptr;
+    vaddr pc = log_pc(cpu, itb);
 
     if (qemu_loglevel_mask(CPU_LOG_TB_CPU | CPU_LOG_EXEC)) {
         log_cpu_exec(log_pc(cpu, itb), cpu, itb);
@@ -487,12 +492,24 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
             cc->set_pc(cpu, last_tb->pc);
         }
         if (qemu_loglevel_mask(CPU_LOG_EXEC)) {
-            vaddr pc = log_pc(cpu, last_tb);
+            pc = log_pc(cpu, last_tb);
             if (qemu_log_in_addr_range(pc)) {
                 qemu_log("Stopped execution of TB chain before %p [%016"
                          VADDR_PRIx "] %s\n",
                          last_tb->tc.ptr, pc, lookup_symbol(pc));
             }
+        }
+    }else{
+        // CPUArchState *env = cpu_env(cpu);
+        
+        bb_cnt++;
+        if (bb_cnt % 200 == 0){
+            qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: triggering a systick ... \n", __func__); 
+            cpu->neg.can_do_io = false;
+            bql_lock();
+            interrupt_firing();
+            bql_unlock();
+            cpu->neg.can_do_io = true;
         }
     }
 
@@ -1014,10 +1031,15 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
                 last_tb = NULL;
             }
 #endif
+/*
+ * chaining complicates AFL's instrumentation so we disable it
+*/
+#ifdef NOPE_NOT_NEVER
             /* See if we can patch the calling TB. */
             if (last_tb) {
                 tb_add_jump(last_tb, tb_exit, tb);
             }
+#endif
 
             cpu_loop_exec_tb(cpu, tb, pc, &last_tb, &tb_exit);
 

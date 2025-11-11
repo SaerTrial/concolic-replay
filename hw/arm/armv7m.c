@@ -277,6 +277,17 @@ static void armv7m_instance_init(Object *obj)
     s->cpuclk = qdev_init_clock_in(DEVICE(obj), "cpuclk", NULL, NULL, 0);
 }
 
+NVICState* interrupt_firing_nvic;
+void interrupt_firing(void);
+void interrupt_firing(void) {
+    // check if enabled before make it pending
+    if (interrupt_firing_nvic->vectors[ARMV7M_EXCP_SYSTICK].enabled){
+        // qemu_log_mask(LOG_GUEST_ERROR,
+        //                "%s: a systick is enabled ... \n", __func__);
+        armv7m_nvic_set_pending(interrupt_firing_nvic, ARMV7M_EXCP_SYSTICK, false);
+    }
+}
+
 static void armv7m_realize(DeviceState *dev, Error **errp)
 {
     ARMv7MState *s = ARMV7M(dev);
@@ -360,6 +371,7 @@ static void armv7m_realize(DeviceState *dev, Error **errp)
      */
     s->cpu->env.nvic = &s->nvic;
     s->nvic.cpu = s->cpu;
+    interrupt_firing_nvic = &s->nvic;
 
     if (!qdev_realize(DEVICE(s->cpu), NULL, errp)) {
         return;
@@ -462,9 +474,11 @@ static void armv7m_realize(DeviceState *dev, Error **errp)
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->systick[M_REG_NS]), errp)) {
         return;
     }
-    sysbus_connect_irq(SYS_BUS_DEVICE(&s->systick[M_REG_NS]), 0,
-                       qdev_get_gpio_in_named(DEVICE(&s->nvic),
-                                              "systick-trigger", M_REG_NS));
+
+    // FIXME: for the determinitic replay reason
+    // sysbus_connect_irq(SYS_BUS_DEVICE(&s->systick[M_REG_NS]), 0,
+    //                    qdev_get_gpio_in_named(DEVICE(&s->nvic),
+    //                                           "systick-trigger", M_REG_NS));
 
     if (arm_feature(&s->cpu->env, ARM_FEATURE_M_SECURITY)) {
         /*
