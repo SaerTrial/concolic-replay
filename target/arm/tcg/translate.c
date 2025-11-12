@@ -8079,26 +8079,36 @@ static void arm_tr_tb_stop(DisasContextBase *dcbase, CPUState *cpu)
 
 void armv7m_nvic_set_pending(NVICState *s, int irq, bool secure);
 extern GHashTable *patched_func_htable;
+extern GHashTable *exit_at_htable;
+
 static uint32_t arm_helper_func(CPUState *cpu){
     static uint32_t cnt = 0;
     CPUARMState *env = cpu_env(cpu);
-    void* element;
+    void* element = NULL;
 
     cnt++;
     
     qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: runnin at 0x%x ...\n", __func__, env->regs[15]); 
 
+    if ( (element = g_hash_table_lookup(exit_at_htable, (gpointer)((uint64_t)env->regs[15])))){
+        qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: exiting at 0x%x (%s) ... \n", __func__, env->regs[15], element? (const char*) element  : "unknown"); 
+        _exit(0);
+    }
+
     // TODO: implement a python replacement for a patched function, returning a desired value?
     if ( (element = g_hash_table_lookup(patched_func_htable, (gpointer)((uint64_t)env->regs[15])))){
+        qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: patching %s at 0x%x ... \n", __func__, element? (const char*) element : "unknown", env->regs[15]); 
+
         if (env->thumb)
             env->regs[15] = env->regs[14] & ~1;
         else
             env->regs[15] = env->regs[14];
+        
+        // patch
         return 1;
     }
 
-    // TODO: fire an enabled IRQ in a whatever way, e.g., round-robin....
-
+    // no patch
     return 0;
 }
 
