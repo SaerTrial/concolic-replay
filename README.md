@@ -5,6 +5,21 @@ This project builds upon SymQEMU to perform concolic replay given control flows 
 An example command:
 `SYMCC_OUTPUT_DIR="/tmp/output1/" SYMCC_MEMORY_INPUT="1" ./qemu-system-arm -M concolic_replay -display none -replayConf $(pwd)/replay.json -D qemu.log -d concolic_replay,guest_errors -kernel ~/stm32h7s78-dk.elf -replayFile /tmp/output/000002`
 
+Build command: 
+``` shell
+mkdir build
+cd build
+../configure                                                    \
+    --audio-drv-list=                                           \
+    --disable-sdl                                               \
+    --disable-gtk                                               \
+    --disable-vte                                               \
+    --disable-opengl                                            \
+    --disable-virglrenderer                                     \
+    --disable-werror                                            \
+    --target-list=arm-softmmu
+make -j
+```
 
 # SymQEMU
 

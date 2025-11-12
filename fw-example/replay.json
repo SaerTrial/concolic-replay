@@ -1,0 +1,14 @@
+{
+ "ram" :[{"name": "SRAM", "addr": "0x24000000", "size": "0x20000"}, {"name": "DTCM", "addr": "0x20000000", "size": "0x20000"} ],
+ "flash": {"addr": "0x8000000","size": "0x20000", "alias_at": "0x0"},
+ "mmio": {"mmio_start": "0x40000000", "mmio_end": "0x60000000"},
+ "patch": [
+	 {"addr":"0x08002548", "name":"HAL_Init"}, 
+	 {"addr": "0x08002648", "name": "HAL_Delay"}, 
+	 {"addr": "0x080002c8", "name": "uart_printf"}
+ ],
+ "exit_at": [
+ 	 {"addr":"0x08000b20", "name":"Error_Handler"},
+	 {"addr":"0x080021c8", "name":"HardFault_Handler"}	 
+ ]
+}
