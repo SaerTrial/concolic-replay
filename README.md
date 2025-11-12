@@ -3,7 +3,9 @@
 This project builds upon SymQEMU to perform concolic replay given control flows for more in-depth analysis. Moreover, this project facilitates concolic fuzzing as well.
 
 An example command:
-`SYMCC_OUTPUT_DIR="/tmp/output1/" SYMCC_MEMORY_INPUT="1" ./qemu-system-arm -M concolic_replay -display none -replayConf $(pwd)/replay.json -D qemu.log -d concolic_replay,guest_errors -kernel ~/stm32h7s78-dk.elf -replayFile /tmp/output/000002`
+```bash
+SYMCC_OUTPUT_DIR="/tmp/output1/" SYMCC_MEMORY_INPUT="1" ./qemu-system-arm -M concolic_replay -display none -replayConf $(pwd)/replay.json -D qemu.log -d concolic_replay -kernel ~/stm32h7s78-dk.elf -replayFile /tmp/output/000002
+```
 
 Build command: 
 ``` shell

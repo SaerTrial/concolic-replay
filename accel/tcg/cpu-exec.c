@@ -502,6 +502,7 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
     }else{
         // CPUArchState *env = cpu_env(cpu);
         // TODO: fire an enabled IRQ in a whatever way, e.g., round-robin, fuzzed, specified order....
+        // interrupt_firing should be implemented by arch since APIs vary
         bb_cnt++;
         if (bb_cnt % 200 == 0){
             qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: triggering a systick ... \n", __func__); 
