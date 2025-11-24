@@ -380,4 +380,4 @@ static void configurable_replay_machine_init(MachineClass *mc)
     mc->valid_cpu_types = valid_cpu_types;
 }
 
-DEFINE_MACHINE("concolic_replay", configurable_replay_machine_init)
+DEFINE_MACHINE("concolic-replay", configurable_replay_machine_init)

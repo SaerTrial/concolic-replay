@@ -1312,52 +1312,62 @@ static void iommu_memory_region_initfn(Object *obj)
 #include "RuntimeCommon.h"
 
 bool getFuzz(uint8_t *buf, uint32_t size);
-
+static bool is_allocated = false;
+target_long* global_val = NULL;
 static uint64_t symbolize_mem_read(void *opaque, hwaddr addr,
                                     unsigned size)
 {
-    //FIXME: Not fully sure other cases in size. Assume 32bit for now.
-    #if TARGET_LONG_SIZE==8
-    uint64_t* global_val = NULL;
-    if(! (global_val = g_hash_table_lookup(mmio_visited, (gpointer)addr))) {
-        global_val = g_malloc0(sizeof(uint64_t));        
-        getFuzz((uint8_t *)global_val, sizeof(uint64_t));
-        g_hash_table_insert(mmio_visited, (gpointer)addr, (gpointer)global_val);
-        symcc_make_symbolic(global_val, sizeof(uint64_t));
-        qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: symbolize mmio read at addr:0x%x with size:%d, physical addr: %p\n",
-                    __func__, (uint32_t)addr, size, global_val);
-    }else{
-        qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: mmio addr:0x%x has been symbolized, physical addr: %p\n",
-                    __func__, (uint32_t)addr, (gpointer)global_val);
-    }
-    #elif TARGET_LONG_SIZE==4
-    uint32_t* global_val = NULL;
-    if(! (global_val = g_hash_table_lookup(mmio_visited, (gpointer)addr))) {
-        global_val = g_malloc0(sizeof(uint32_t));
-        // *global_val = 0xdeadbeef;
-        getFuzz((uint8_t *)global_val, sizeof(uint32_t));
-        g_hash_table_insert(mmio_visited, (gpointer)addr, (gpointer)global_val);
-        symcc_make_symbolic(global_val, sizeof(uint32_t));
-        qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: symbolize mmio read at addr:0x%x with size:%d, physical addr: %p\n",
-                    __func__, (uint32_t)addr, size, (gpointer)global_val);
-    }else{
-        qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: mmio addr:0x%x has been symbolized, physical addr: %p\n",
-                    __func__, (uint32_t)addr, (gpointer)global_val);
-    }    
-    #else
-        return 0;
-    #endif
+    assert (size <= sizeof(target_long));
 
-#ifdef DEBUG_UNASSIGNED
-    GHashTableIter iter;
-    uint32_t addr_iter;
-    uint64_t* val;
-    g_hash_table_iter_init(&iter, mmio_visited);
-    while (g_hash_table_iter_next(&iter, (gpointer)&addr_iter, (gpointer)&val)) {
-            qemu_log_mask(LOG_CONCOLIC_REPLAY,
-            "%s: iterated MMIO 0x%x is symbolized with val: 0x%lx \n", __func__, addr_iter, *val);
-    }   
-#endif              
+    // #if TARGET_LONG_SIZE==8
+    // uint64_t* global_val = NULL;
+    // if(! (global_val = g_hash_table_lookup(mmio_visited, (gpointer)addr))) {
+    //     global_val = g_malloc0(sizeof(uint64_t));        
+    //     getFuzz((uint8_t *)global_val, sizeof(uint64_t));
+    //     g_hash_table_insert(mmio_visited, (gpointer)addr, (gpointer)global_val);
+    //     symcc_make_symbolic(global_val, sizeof(uint64_t));
+    //     qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: symbolize mmio read at addr:0x%x with size:%d, physical addr: %p\n",
+    //                 __func__, (uint32_t)addr, size, global_val);
+    // }else{
+    //     qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: mmio addr:0x%x has been symbolized, physical addr: %p\n",
+    //                 __func__, (uint32_t)addr, (gpointer)global_val);
+    // }
+    // #elif TARGET_LONG_SIZE==4
+    if (!is_allocated) {
+        global_val = g_malloc0(sizeof(target_long));
+        is_allocated = true;
+    }
+
+    getFuzz((uint8_t *)global_val, size);
+    symcc_make_symbolic(global_val, size);
+
+
+    // if(! (global_val = g_hash_table_lookup(mmio_visited, (gpointer)addr))) {
+    //     global_val = g_malloc0(sizeof(uint32_t));
+    //     // *global_val = 0xdeadbeef;
+    //     getFuzz((uint8_t *)global_val, sizeof(uint32_t));
+    //     g_hash_table_insert(mmio_visited, (gpointer)addr, (gpointer)global_val);
+    //     symcc_make_symbolic(global_val, sizeof(uint32_t));
+    //     qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: symbolize mmio read at addr:0x%x with size:%d, physical addr: %p\n",
+    //                 __func__, (uint32_t)addr, size, (gpointer)global_val);
+    // }else{
+    //     qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: mmio addr:0x%x has been symbolized, physical addr: %p\n",
+    //                 __func__, (uint32_t)addr, (gpointer)global_val);
+    // }    
+    // #else
+    //     return 0;
+    // #endif
+
+// #ifdef DEBUG_UNASSIGNED
+//     GHashTableIter iter;
+//     uint32_t addr_iter;
+//     uint64_t* val;
+//     g_hash_table_iter_init(&iter, mmio_visited);
+//     while (g_hash_table_iter_next(&iter, (gpointer)&addr_iter, (gpointer)&val)) {
+//             qemu_log_mask(LOG_CONCOLIC_REPLAY,
+//             "%s: iterated MMIO 0x%x is symbolized with val: 0x%lx \n", __func__, addr_iter, *val);
+//     }   
+// #endif              
 
     assert (global_val != NULL);
     return *global_val;
@@ -1375,17 +1385,17 @@ static uint64_t unassigned_mem_read(void *opaque, hwaddr addr,
 static void symbolize_mem_write(void *opaque, hwaddr addr,
                                  uint64_t val, unsigned size)
 {
-    uint64_t* value = NULL;
+    // uint64_t* value = NULL;
 
     qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: write: addr=0x%x val=0x%lx\n",
                   __func__, (uint32_t)addr, (uint64_t)val);
 
-    if( (value = g_hash_table_lookup(mmio_visited, (gpointer)addr))) {
-        *value = val;
-        g_hash_table_replace(mmio_visited, (gpointer)addr, (gpointer)value);
-        qemu_log_mask(LOG_CONCOLIC_REPLAY,
-            "%s: symbolized MMIO 0x%x is replaced with val: 0x%lx \n", __func__, (uint32_t)addr, *value);
-    }
+    // if( (value = g_hash_table_lookup(mmio_visited, (gpointer)addr))) {
+    //     *value = val;
+    //     g_hash_table_replace(mmio_visited, (gpointer)addr, (gpointer)value);
+    //     qemu_log_mask(LOG_CONCOLIC_REPLAY,
+    //         "%s: symbolized MMIO 0x%x is replaced with val: 0x%lx \n", __func__, (uint32_t)addr, *value);
+    // }
 }
 
 static void unassigned_mem_write(void *opaque, hwaddr addr,
