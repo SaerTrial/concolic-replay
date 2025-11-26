@@ -131,7 +131,6 @@ static QDict * load_configuration(const char * filename)
 }
 
 uint32_t mmio_start, mmio_end;
-GHashTable *mmio_visited;
 
 static void load_ram(QDict * ram_dict) {
         Error *err = NULL;
@@ -344,8 +343,7 @@ static void configurable_replay_init(MachineState *machine)
         sysclk = clock_new(OBJECT(machine), "SYSCLK");
         clock_set_hz(sysclk, SYSCLK_FRQ);
 
-        /* Initialize a global MMIO-access table and the symbolic backend */
-        mmio_visited = g_hash_table_new(NULL, NULL);
+        /* Initialize the symbolic backend */
         _sym_initialize();
 
         armv7m = qdev_new(TYPE_ARMV7M);

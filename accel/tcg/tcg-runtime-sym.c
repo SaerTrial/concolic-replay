@@ -294,8 +294,7 @@ void *HELPER(sym_bswap)(void *expr, uint64_t length)
 
 #include "qemu/log.h"
 extern uint32_t mmio_start, mmio_end;
-extern GHashTable *mmio_visited;
-extern target_long* global_val;
+extern target_long* g_sym_expr;
 
 #define DEBUG
 static void *sym_load_guest_internal(CPUArchState *env,
@@ -331,10 +330,9 @@ static void *sym_load_guest_internal(CPUArchState *env,
 
     if(addr >= mmio_start && addr < mmio_end) {
         // assume unassigned_mem_read executed beforehand, then we have a pointer in the hash table
-        // uint64_t* global_val = NULL;
-        // global_val = g_hash_table_lookup(mmio_visited, (gpointer)((uint64_t)addr));
 
-        host_addr = (void*)global_val;
+        assert (g_sym_expr != NULL && "A temp memory to save sym expr is NULL");
+        host_addr = (void*)g_sym_expr;
         memory_expr = _sym_read_memory((uint8_t*)host_addr, load_length, true);
 
         /* a trick to reuse the same allocated memory without running out of memory in case of many MMIO accesses */
@@ -392,13 +390,8 @@ static void sym_store_guest_internal(CPUArchState *env,
     void *host_addr = NULL;
 
     if(addr >= mmio_start && addr < mmio_end) {
-        // FIXME: clean symbolic expr whenever a write occurs, and this address stores a concrete value.
-        // host_addr = g_hash_table_lookup(mmio_visited, (gpointer)((uint64_t)addr));
-        // if (host_addr != NULL)
-        //     _sym_memset((uint8_t*)host_addr, 0, length);
-        
         /*  clean sym expr */
-        // _sym_write_memory((uint8_t*)addr, length, NULL, true);
+        _sym_write_memory((uint8_t*)addr, length, NULL, true);
         
         return ;
     }

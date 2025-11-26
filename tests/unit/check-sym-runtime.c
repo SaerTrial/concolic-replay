@@ -16,7 +16,11 @@
 
 #include "qemu/osdep.h"
 #include "tcg/tcg.h"
+
+#if defined(TARGET_I386)
 #include "hw/i386/topology.h"
+#endif
+
 #include "cpu.h"
 #include "exec/helper-proto.h"
 

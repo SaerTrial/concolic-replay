@@ -23,6 +23,7 @@ arm_ss.add(gen_a32)
 arm_ss.add(when: 'TARGET_AARCH64', if_true: gen_a64)
 
 arm_ss.add(files(
+  'function_hooks.c',
   'cpu32.c',
   'gengvec.c',
   'translate.c',
