@@ -8090,7 +8090,7 @@ static uint32_t arm_helper_func(CPUState *cpu){
     void* element = NULL;
     func_hook_t func_hook_ptr;
         
-    qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: runnin at 0x%x bb_cnt:0x%x...\n", __func__, env->regs[15], bb_cnt); 
+    // qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: runnin at 0x%x bb_cnt:0x%x...\n", __func__, env->regs[15], bb_cnt); 
 
     if ( (element = g_hash_table_lookup(exit_at_htable, (gpointer)((uint64_t)env->regs[15])))){
         qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: exiting at 0x%x (%s) ... \n", __func__, env->regs[15], element? (const char*) element  : "unknown"); 

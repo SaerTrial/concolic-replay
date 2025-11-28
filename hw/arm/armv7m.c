@@ -277,15 +277,83 @@ static void armv7m_instance_init(Object *obj)
     s->cpuclk = qdev_init_clock_in(DEVICE(obj), "cpuclk", NULL, NULL, 0);
 }
 
-NVICState* interrupt_firing_nvic;
+NVICState* nvic;
+
+typedef struct RoundRobinInterruptFiring {
+    uint8_t array_len;   
+    int rr_index;           // Round-robin pointer
+    uint8_t enabled_snapshot[NVIC_MAX_VECTORS]; // For change detection
+} RoundRobinInterruptFiring;
+RoundRobinInterruptFiring* pRoundRobin = NULL;
+
+static bool nvic_enabled_changed(void)
+{
+    uint8_t cur[NVIC_MAX_VECTORS] = {0};
+    uint8_t new_array_len = 0;
+
+    // trick: count systick in, so start from 15
+    // FIXME: may not be correct all the cases
+    for (int i = ARMV7M_EXCP_SYSTICK; i < NVIC_MAX_VECTORS; i++) {
+        if (nvic->vectors[i].enabled){
+            cur[new_array_len++] = i;
+        }
+    }
+
+    if (memcmp(cur, pRoundRobin->enabled_snapshot, sizeof(cur)) != 0) {
+        memcpy(pRoundRobin->enabled_snapshot, cur, sizeof(cur));
+        pRoundRobin->array_len = new_array_len;
+
+        qemu_log_mask(LOG_CONCOLIC_REPLAY,
+                       "[%s] new irqs are enabled \n", __func__);
+
+        for (int i = 0; i < new_array_len; i++) 
+            qemu_log_mask(LOG_CONCOLIC_REPLAY,
+                       "[%s] enabled_irq[%d]=%d \n", __func__, i, pRoundRobin->enabled_snapshot[i]);
+
+        return true;
+    }
+    return false;
+}
+
+static uint8_t round_robin_next_irq(void)
+{
+    uint8_t next_irq = 0;
+    if (pRoundRobin->array_len == 0) {
+        return next_irq;
+    }
+
+    next_irq = pRoundRobin->enabled_snapshot[pRoundRobin->rr_index++];
+
+    if (pRoundRobin->rr_index >= pRoundRobin->array_len) {
+        pRoundRobin->rr_index = 0; 
+
+        // wheneve a round ends, update the array if any change
+        nvic_enabled_changed();
+    }
+
+    return next_irq;
+}
+
 void interrupt_firing(void);
 void interrupt_firing(void) {
-    // check if enabled before make it pending
-    if (interrupt_firing_nvic->vectors[ARMV7M_EXCP_SYSTICK].enabled){
-        // qemu_log_mask(LOG_GUEST_ERROR,
-        //                "%s: a systick is enabled ... \n", __func__);
-        armv7m_nvic_set_pending(interrupt_firing_nvic, ARMV7M_EXCP_SYSTICK, false);
+    // TODO: round robin, or fuzzed, or specified ...
+  
+    if (!pRoundRobin)  {
+        pRoundRobin = g_malloc(sizeof(RoundRobinInterruptFiring));
+        pRoundRobin->rr_index = 0;
+        pRoundRobin->array_len = 0;
+        memset(pRoundRobin->enabled_snapshot, 0, sizeof(pRoundRobin->enabled_snapshot));
+        nvic_enabled_changed();
     }
+
+    // TODO: in case of more firing strategies, implement here
+    uint8_t next_irq = round_robin_next_irq();    
+
+    //if (nvic->vectors[ARMV7M_EXCP_SYSTICK].enabled){
+    qemu_log_mask(LOG_CONCOLIC_REPLAY,
+                       "[%s] firing irq %d \n", __func__, next_irq);
+    armv7m_nvic_set_pending(nvic, next_irq, false);
+    //}
 }
 
 static void armv7m_realize(DeviceState *dev, Error **errp)
@@ -371,7 +439,7 @@ static void armv7m_realize(DeviceState *dev, Error **errp)
      */
     s->cpu->env.nvic = &s->nvic;
     s->nvic.cpu = s->cpu;
-    interrupt_firing_nvic = &s->nvic;
+    nvic = &s->nvic;
 
     if (!qdev_realize(DEVICE(s->cpu), NULL, errp)) {
         return;

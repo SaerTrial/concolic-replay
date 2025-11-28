@@ -43,8 +43,11 @@
 #include "internal-target.h"
 
 /* record and replay project */
-static uint32_t bb_cnt = 0;
+uint32_t bb_cnt = 0;
 void interrupt_firing(void);
+extern bool interrupt_firing_enabled;
+extern uint32_t firing_frequency;
+extern uint8_t firing_mode;
 
 /* -icount align implementation. */
 
@@ -500,17 +503,18 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
             }
         }
     }else{
-        // CPUArchState *env = cpu_env(cpu);
-        // TODO: fire an enabled IRQ in a whatever way, e.g., round-robin, fuzzed, specified order....
-        // interrupt_firing should be implemented by arch since APIs vary
-        bb_cnt++;
-        if (bb_cnt % 200 == 0){
-            qemu_log_mask(LOG_CONCOLIC_REPLAY, "%s: triggering a systick ... \n", __func__); 
-            cpu->neg.can_do_io = false;
-            bql_lock();
-            interrupt_firing();
-            bql_unlock();
-            cpu->neg.can_do_io = true;
+        
+        qemu_log_mask(LOG_CONCOLIC_REPLAY, "[%s] running at 0x%x bb_cnt:0x%x...\n", __func__, (uint32_t)pc, bb_cnt); 
+
+        if (interrupt_firing_enabled){
+            bb_cnt++;
+            if (bb_cnt % firing_frequency == 0){
+                cpu->neg.can_do_io = false;
+                bql_lock();
+                interrupt_firing();
+                bql_unlock();
+                cpu->neg.can_do_io = true;
+            }
         }
     }
 
