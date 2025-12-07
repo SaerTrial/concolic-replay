@@ -43,11 +43,9 @@
 #include "internal-target.h"
 
 /* record and replay project */
+#include "hw/concolic/arm/interrupt_firing.h"
 uint32_t bb_cnt = 0;
-void interrupt_firing(void);
-extern bool interrupt_firing_enabled;
-extern uint32_t firing_frequency;
-extern uint8_t firing_mode;
+extern FILE* cov_fp;
 
 /* -icount align implementation. */
 
@@ -450,6 +448,7 @@ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
  * TCG is not considered a security-sensitive part of QEMU so this does not
  * affect the impact of CFI in environment with high security requirements
  */
+
 static inline TranslationBlock * QEMU_DISABLE_CFI
 cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
 {
@@ -503,9 +502,10 @@ cpu_tb_exec(CPUState *cpu, TranslationBlock *itb, int *tb_exit)
             }
         }
     }else{
+        // qemu_log_mask(LOG_CONCOLIC_REPLAY, "[%s] executed at 0x%x bb_cnt:0x%x...\n", __func__, (uint32_t)pc, bb_cnt); 
+        if (cov_fp)
+            fprintf(cov_fp, "0x%08" PRIx32 ", %8u, [  ]\n", (uint32_t)pc, itb->size);
         
-        qemu_log_mask(LOG_CONCOLIC_REPLAY, "[%s] running at 0x%x bb_cnt:0x%x...\n", __func__, (uint32_t)pc, bb_cnt); 
-
         if (interrupt_firing_enabled){
             bb_cnt++;
             if (bb_cnt % firing_frequency == 0){

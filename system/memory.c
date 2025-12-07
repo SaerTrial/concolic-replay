@@ -34,6 +34,7 @@
 #include "hw/boards.h"
 #include "migration/vmstate.h"
 #include "exec/address-spaces.h"
+#include "hw/concolic/utils/mem.h"
 
 //#define DEBUG_UNASSIGNED
 
@@ -1313,6 +1314,8 @@ static void iommu_memory_region_initfn(Object *obj)
 bool getFuzz(uint8_t *buf, uint32_t size);
 static bool is_allocated = false;
 target_long* g_sym_expr = NULL;
+extern bool is_symbolize_at_mmio;
+
 static uint64_t symbolize_mem_read(void *opaque, hwaddr addr,
                                     unsigned size)
 {
@@ -1324,7 +1327,8 @@ static uint64_t symbolize_mem_read(void *opaque, hwaddr addr,
     }
 
     getFuzz((uint8_t *)g_sym_expr, size);
-    symcc_make_symbolic(g_sym_expr, size);        
+
+    if (is_symbolize_at_mmio) symcc_make_symbolic(g_sym_expr, size);        
 
     assert (g_sym_expr != NULL);
     return *g_sym_expr;
@@ -1468,8 +1472,6 @@ static MemTxResult memory_region_dispatch_read1(MemoryRegion *mr,
     }
 }
 
-extern uint32_t mmio_start, mmio_end;
-
 MemTxResult memory_region_dispatch_read(MemoryRegion *mr,
                                         hwaddr addr,
                                         uint64_t *pval,
@@ -1487,10 +1489,9 @@ MemTxResult memory_region_dispatch_read(MemoryRegion *mr,
     if (!memory_region_access_valid(mr, addr, size, false, attrs)) {
         
         *pval = unassigned_mem_read(mr, addr, size);
-        if (addr >= mmio_start && addr < mmio_end){
+        
+        if (range_contain_addr(mmio_ranges, addr)){
             *pval = symbolize_mem_read(mr, addr, size);
-            // printf("%s: value 0x%x is returned to the address 0x%x, mr->ops->endianness: %d\n", __func__,
-            //      *(uint32_t*)pval, (uint32_t)addr, mr->ops->endianness);
             adjust_endianness(mr, pval, op);
             return MEMTX_OK;
         }
@@ -1543,7 +1544,7 @@ MemTxResult memory_region_dispatch_write(MemoryRegion *mr,
     }
     if (!memory_region_access_valid(mr, addr, size, true, attrs)) {
         unassigned_mem_write(mr, addr, data, size);
-        if (addr >= mmio_start && addr < mmio_end) {
+        if (range_contain_addr(mmio_ranges, addr)) {
             adjust_endianness(mr, &data, op);
             symbolize_mem_write(mr, addr, data, size);
             return MEMTX_OK;

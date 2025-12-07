@@ -2,14 +2,36 @@
 
 GHashTable *func_ptr_htable = NULL;
 
-static uint32_t hook_cnt = 0;
 
+
+int return_reg_index_by_name(const char* reg_name) {
+    int len = sizeof(arm_reg_names) / sizeof(arm_reg_names[0]);
+
+    char* tmp_reg_name = g_malloc0(strlen(reg_name) + 1);
+    strcpy(tmp_reg_name, reg_name);
+
+    for (int i = 0; i < strlen(tmp_reg_name); i++)
+        tmp_reg_name[i] = tolower(tmp_reg_name[i]); 
+
+    for (int i = 0; i < len; i++) {
+        if (!strcmp(tmp_reg_name, arm_reg_names[i])) {
+            g_free(tmp_reg_name);
+            return i;
+        }
+    }
+
+    g_free(tmp_reg_name);
+    return -1;
+}
+
+
+
+static uint32_t hook_cnt = 0;
 void delay_hook(CPUARMState *env) {
     printf("[%s_%d]\n", __func__, hook_cnt);
     qemu_log_mask(LOG_CONCOLIC_REPLAY, "[%s_%d]\n", __func__, hook_cnt); 
     hook_cnt++;
 }
-
 
 static inline uint8_t mem_read8(CPUARMState *env, uint32_t addr) {
     return cpu_ldub_data(env, addr);

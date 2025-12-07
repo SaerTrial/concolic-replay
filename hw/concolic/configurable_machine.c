@@ -16,11 +16,13 @@
 #include "qapi/qmp/qstring.h"
 #include "qapi/qmp/qjson.h"
 #include "qemu/log.h"
+#include "utils/mem.h"
 
 #ifdef TARGET_ARM
 #include "hw/arm/boot.h"
 #include "hw/arm/armv7m.h"
 #include "target/arm/cpu.h"
+#include "hw/concolic/arm/function_hooks.h"
 typedef ARMCPU THISCPU;
 #endif
 
@@ -29,10 +31,11 @@ typedef ARMCPU THISCPU;
 #define SYSCLK_FRQ 40000000ULL
 
 #define QDICT_ASSERT_KEY_TYPE(_dict, _key, _type) \
-    g_assert(qdict_haskey(_dict, _key) && qobject_type(qdict_get(_dict, _key)) == _type)
+    assert(qdict_haskey(_dict, _key) && qobject_type(qdict_get(_dict, _key)) == _type)
 
 
-extern const char *replayConf;
+FILE* cov_fp = NULL;
+extern const char *covFile;
 extern const char *replayFile;
 GHashTable *patched_func_htable = NULL;
 GHashTable *exit_at_htable = NULL;
@@ -41,6 +44,10 @@ uint8_t *fuzz = NULL;
 uint32_t fuzz_size = 0;
 uint32_t fuzz_cursor = 0;
 static bool input_already_given = false;
+
+bool is_symbolize_at_mmio = false;
+bool is_symbolize_at_pc = false;
+unsigned long aflPanicAddr = (unsigned long)-1;
 
 bool getFuzz(uint8_t *buf, uint32_t size);
 static void loadFuzz(void);
@@ -137,13 +144,13 @@ static QDict * load_configuration(const char * filename)
     return qobject_to(QDict, obj);
 }
 
-uint32_t mmio_start, mmio_end;
 
 static void load_ram(QDict * ram_dict) {
         Error *err = NULL;
         MemoryRegion *system_memory = get_system_memory();
         MemoryRegion *ram = g_new(MemoryRegion, 1);
-
+        const char* ram_name = qstring_get_str(qobject_to(QString, qdict_get(ram_dict, "name")));
+        
         uint32_t ram_addr = strtol( 
                 qstring_get_str(qobject_to(QString, qdict_get(ram_dict, "addr"))),
                 NULL,
@@ -154,16 +161,24 @@ static void load_ram(QDict * ram_dict) {
                 NULL,
                 0);
 
-        memory_region_init_ram(ram, NULL, qstring_get_str(qobject_to(QString, qdict_get(ram_dict, "name"))), 
+        memory_region_init_ram(ram, NULL, ram_name, 
                                 ram_size, &err);
         memory_region_add_subregion(system_memory, ram_addr, ram);
 
-        qemu_log_mask(LOG_CONCOLIC_REPLAY,
-        "[%s] name: %s, ram: 0x%x, size: 0x%x\n", 
-                __func__,
-                qstring_get_str(qobject_to(QString, qdict_get(ram_dict, "name"))), 
-                ram_addr, 
-                ram_size);
+
+        if (ram_ranges == NULL) ram_ranges = g_ptr_array_new_with_free_func(g_free);
+
+        MemRange *r = g_new0(MemRange, 1);
+        r->start = ram_addr;
+        r->end   = ram_addr + ram_size;
+        g_ptr_array_add(ram_ranges, r);
+
+        // qemu_log_mask(LOG_CONCOLIC_REPLAY,
+        // "[%s] name: %s, ram: 0x%x, size: 0x%x\n", 
+        //         __func__,
+        //         ram_name,
+        //         ram_addr, 
+        //         ram_size);
 }
 
 
@@ -198,6 +213,7 @@ static int get_dirname_len(const char * filename) {
 }
 
 
+
 uint32_t flash_addr;
 uint32_t flash_size;
 const char* kernel_filename;
@@ -208,20 +224,20 @@ static void load_flash(QDict * flash_dict) {
         char* data = NULL;
         uint32_t data_size;
 
-        assert(qdict_haskey(flash_dict, "addr") && "need a flash addr!");
+        QDICT_ASSERT_KEY_TYPE(flash_dict, "addr", QTYPE_QSTRING);
         flash_addr = strtol( 
                 qstring_get_str(qobject_to(QString, qdict_get(flash_dict, "addr"))),
                 NULL,
                 0);
 
-        assert(qdict_haskey(flash_dict, "size") && "need a flash size!");
+        QDICT_ASSERT_KEY_TYPE(flash_dict, "size", QTYPE_QSTRING);
         flash_size = strtol( 
                 qstring_get_str(qobject_to(QString, qdict_get(flash_dict, "size"))),
                 NULL,
                 0);
 
 
-        assert(qdict_haskey(flash_dict, "name") && "need a flash name!");
+        QDICT_ASSERT_KEY_TYPE(flash_dict, "name", QTYPE_QSTRING);
         const char* flash_name = qstring_get_str(qobject_to(QString, qdict_get(flash_dict, "name")));
 
         MemoryRegion *flash =  g_new(MemoryRegion, 1);
@@ -262,13 +278,13 @@ static void load_flash(QDict * flash_dict) {
                 ssize_t err_file;
                 uint32_t file_offset = 0;
 
-                g_assert(qobject_type(qdict_get(flash_dict, "file")) == QTYPE_QSTRING);
+                assert(qobject_type(qdict_get(flash_dict, "file")) == QTYPE_QSTRING);
                 filename = qdict_get_str(flash_dict, "file");
 
                 if (!is_absolute_path(filename)) {
                 char * relative_filename = g_malloc0(dirname_len +
                                                         strlen(filename) + 1);
-                g_assert(relative_filename);
+                assert(relative_filename);
                 strncpy(relative_filename, kernel_filename, dirname_len);
                 strcat(relative_filename, filename);
 
@@ -283,32 +299,31 @@ static void load_flash(QDict * flash_dict) {
 
                 if (qdict_haskey(flash_dict, "file_offset")) {
                 off_t sbytes;
-                g_assert(qobject_type(qdict_get(flash_dict, "file_offset")) == QTYPE_QNUM);
+                assert(qobject_type(qdict_get(flash_dict, "file_offset")) == QTYPE_QNUM);
                 file_offset = qdict_get_int(flash_dict, "file_offset");
                 sbytes = lseek(file,file_offset,SEEK_SET);
-                g_assert(sbytes > 0);
+                assert(sbytes > 0);
                 data_size -= sbytes;
                 }
 
                 if (qdict_haskey(flash_dict,"file_bytes")) {
                 ssize_t file_bytes;
-                g_assert(qobject_type(qdict_get(flash_dict, "file_bytes")) == QTYPE_QNUM);
+                assert(qobject_type(qdict_get(flash_dict, "file_bytes")) == QTYPE_QNUM);
                 file_bytes = qdict_get_int(flash_dict, "file_bytes");
                 data_size = file_bytes;
                 printf("File bytes: 0x%x\n",data_size);
-
                 }
 
                 printf("Configurable: Inserting 0x%"
                 PRIx32 " bytes of data in memory region %s\n", data_size, flash_name);
                 //Size of data to put into a RAM region needs to fit in the RAM region
-                g_assert(data_size <= flash_size);
+                assert(data_size <= flash_size);
 
                 data = g_malloc(data_size);
-                g_assert(data);
+                assert(data);
 
                 err_file = read(file, data, data_size);
-                g_assert(err_file == data_size);
+                assert(err_file == data_size);
 
                 close(file);
 
@@ -323,8 +338,6 @@ static void load_flash(QDict * flash_dict) {
                                         (uint8_t *) data, data_size);
                 g_free(data);
         }
-
-
 
         if (alias_addr == 0xffffffff)
                 qemu_log_mask(LOG_CONCOLIC_REPLAY, "[%s] name: %s, addr: 0x%x, size: 0x%x \n", __func__, flash_name, flash_addr, flash_size);  
@@ -358,11 +371,16 @@ static void configure_interrupt_firing_strategy(QDict* interrupt_firing){
    
 }
 
-static void configure_mmio(QDict * mmio)
-{
+static void configure_mmio(QDict * mmio) {
         /*
-        "mmio":{"mmio_start":"0x40000000", "mmio_end": "0x60000000"}
+        "mmio":[{"mmio_start":"0x40000000", "mmio_end": "0x60000000"},
+               {"mmio_start":"0x70000000", "mmio_end": "0x80000000"}]
         */
+        uint32_t mmio_start, mmio_end;
+
+        QDICT_ASSERT_KEY_TYPE(mmio, "mmio_start", QTYPE_QSTRING);
+        QDICT_ASSERT_KEY_TYPE(mmio, "mmio_end", QTYPE_QSTRING);
+
         mmio_start = strtol( 
                 qstring_get_str(qobject_to(QString, qdict_get(mmio, "mmio_start"))),
                 NULL,
@@ -372,13 +390,30 @@ static void configure_mmio(QDict * mmio)
                 qstring_get_str(qobject_to(QString, qdict_get(mmio, "mmio_end"))),
                 NULL,
                 0);
-        
-        qemu_log_mask(LOG_CONCOLIC_REPLAY,
-        "[%s] mmio_start: 0x%x mmio_end: 0x%x\n", __func__, mmio_start, mmio_end);  
+ 
+        if (mmio_ranges == NULL) mmio_ranges = g_ptr_array_new_with_free_func(g_free);
+
+        MemRange *r = g_new0(MemRange, 1);
+        r->start = mmio_start;
+        r->end   = mmio_end;
+        g_ptr_array_add(mmio_ranges, r);
+
+        // if (qdict_haskey(mmio, "symbolize")) {
+        //         assert(qobject_type(qdict_get(mmio, "symbolize")) == QTYPE_QNUM);
+
+        //         is_symbolize_at_mmio |= qdict_get_int(mmio, "symbolize");
+        // }
+
+
+        /* by default, mmio symbilization is true whenever a mmio range is defined */
+        is_symbolize_at_mmio = true;
+
+        // qemu_log_mask(LOG_CONCOLIC_REPLAY,
+        // "[%s] mmio_start: 0x%x mmio_end: 0x%x \n", __func__, mmio_start, mmio_end);  
 
 }
 
-static void create_patch(QDict * patch_entry){
+static void create_patch(QDict * patch_entry) {
         if (!patched_func_htable) patched_func_htable = g_hash_table_new(NULL, NULL);
 
         uint32_t addr = strtol(
@@ -417,39 +452,81 @@ static void create_exit_at(QDict * exit_at_entry) {
                         element = (void*)qstring_get_str(qobject_to(QString, qdict_get(exit_at_entry, "name")));
                 g_hash_table_insert(exit_at_htable, (gpointer)((uint64_t)addr), (gpointer)element);
         }
+}
+
+static void load_symbolize_at_pc(QList* sym_list) {
+
+        QListEntry *symbolize_at_pc;
+        QLIST_FOREACH_ENTRY(sym_list, symbolize_at_pc) {
+        
+                if (symbolize_at_pc_array == NULL) symbolize_at_pc_array = g_ptr_array_new_with_free_func(g_free);
+                
+                SymbolizeAtPcArray *r = g_new0(SymbolizeAtPcArray, 1);
+                assert(qobject_type(symbolize_at_pc->value) == QTYPE_QSTRING);
+
+                r->pc = strtol(
+                        qstring_get_str(qobject_to(QString, symbolize_at_pc->value)),
+                        NULL,
+                        0);
+
+                g_ptr_array_add(symbolize_at_pc_array, r);
+
+                is_symbolize_at_pc |= true;
+
+                qemu_log_mask(LOG_CONCOLIC_REPLAY,
+                        "[%s] symbolize_at_pc: 0x%x \n", __func__, r->pc);
+        }  
 
 }
 
 
 static void print_configuration(void){
-    /* patch functions */
-    GHashTableIter iter;
-    uint32_t addr_iter;
-    const char* func_name = NULL;
-    g_hash_table_iter_init(&iter, patched_func_htable);
-    uint32_t cnt = 0;
+        /* patch functions */
+        GHashTableIter iter;
+        uint32_t addr_iter;
+        const char* func_name = NULL;
+        g_hash_table_iter_init(&iter, patched_func_htable);
+        uint32_t cnt = 0;
 
-    qemu_log_mask(LOG_CONCOLIC_REPLAY,
+        qemu_log_mask(LOG_CONCOLIC_REPLAY,
+        "[%s] --------------------------mmio range----------------------------\n", __func__);
+
+        for (int i = 0; i < mmio_ranges->len; i++) {
+                MemRange *r = g_ptr_array_index(mmio_ranges, i);
+                qemu_log_mask(LOG_CONCOLIC_REPLAY,
+                "%s: [%d] mmio_start: 0x%x mmio_end: 0x%x \n", __func__, cnt, r->start, r->end);
+                cnt++;
+        }
+
+        cnt = 0;
+        qemu_log_mask(LOG_CONCOLIC_REPLAY,
+        "[%s] --------------------------ram range----------------------------\n", __func__);
+
+        for (int i = 0; i < ram_ranges->len; i++) {
+                MemRange *r = g_ptr_array_index(ram_ranges, i);
+                qemu_log_mask(LOG_CONCOLIC_REPLAY,
+                "%s: [%d] ram_start: 0x%x ram_end: 0x%x \n", __func__, cnt, r->start, r->end);
+                cnt++;
+        }
+
+        cnt = 0;
+        qemu_log_mask(LOG_CONCOLIC_REPLAY,
         "[%s] --------------------------patch function----------------------------\n", __func__);
 
-    while (g_hash_table_iter_next(&iter, (gpointer)&addr_iter, (gpointer)&func_name)) {
+        while (g_hash_table_iter_next(&iter, (gpointer)&addr_iter, (gpointer)&func_name)) {
+                qemu_log_mask(LOG_CONCOLIC_REPLAY,
+                "%s: [%d] addr: 0x%x (patched func name): %s \n", __func__, cnt, addr_iter, func_name? func_name : "unknown");
+                cnt++;
+        } 
+        cnt = 0;
         qemu_log_mask(LOG_CONCOLIC_REPLAY,
-        "%s: [%d] addr: 0x%x (patched func name): %s \n", __func__, cnt, addr_iter, func_name? func_name : "unknown");
-        cnt++;
-    } 
-
-    cnt = 0;
-    qemu_log_mask(LOG_CONCOLIC_REPLAY,
-        "%s: --------------------------exit_at function----------------------------\n", __func__);
-        g_hash_table_iter_init(&iter, exit_at_htable);
-    while (g_hash_table_iter_next(&iter, (gpointer)&addr_iter, (gpointer)&func_name)) {
-        qemu_log_mask(LOG_CONCOLIC_REPLAY,
-        "%s: [%d] exit_at addr: 0x%x (func_name): %s \n", __func__, cnt, addr_iter, func_name? func_name : "unknown");
-        cnt++;
-    } 
-
-    // TODO: test if there is the same entry between the patch table and exit_at one.
-    // If so, then panic
+                "%s: --------------------------exit_at function----------------------------\n", __func__);
+                g_hash_table_iter_init(&iter, exit_at_htable);
+        while (g_hash_table_iter_next(&iter, (gpointer)&addr_iter, (gpointer)&func_name)) {
+                qemu_log_mask(LOG_CONCOLIC_REPLAY,
+                "%s: [%d] exit_at addr: 0x%x (func_name): %s \n", __func__, cnt, addr_iter, func_name? func_name : "unknown");
+                cnt++;
+        }
 
 }
 
@@ -462,8 +539,6 @@ static THISCPU *create_cpu(MachineState * ms, QDict *conf){
         const char *entry_field = "entry_address";
         uint32_t entrypoint;
 
-        if(!qdict_haskey(conf, entry_field))
-                exit(1);
 
         QDICT_ASSERT_KEY_TYPE(conf, entry_field, QTYPE_QSTRING);
         entrypoint = strtol(qdict_get_str(conf, entry_field), NULL, 0);
@@ -482,7 +557,7 @@ static THISCPU *create_cpu(MachineState * ms, QDict *conf){
 
         if (qdict_haskey(conf, "cpu_model")) {
                 cpu_type = qdict_get_str(conf, "cpu_model");
-                g_assert(cpu_type);
+                assert(cpu_type);
 
                 cpu_oc = cpu_class_by_name(TYPE_ARM_CPU, cpu_type);
                 if (!cpu_oc) {
@@ -507,7 +582,7 @@ static THISCPU *create_cpu(MachineState * ms, QDict *conf){
         
         if (qdict_haskey(conf, "num_irq")) {
                 num_irq = qdict_get_int(conf, "num_irq");
-                g_assert(num_irq);
+                assert(num_irq);
         } 
         
         /* need a sysclk, otherwise realize would not succeed. The part connected to systick has been commented out */
@@ -524,18 +599,42 @@ static THISCPU *create_cpu(MachineState * ms, QDict *conf){
                 OBJECT(system_memory), &error_abort);
 
         if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(dstate), NULL)) {
-              printf("exit??");
                 exit(1);
         }
-        
 
-        assert (ms->kernel_filename != NULL && "a firmware binary should be specified!");
         cpuu = ARM_CPU(first_cpu);
         cpuu->env.regs[15] = entrypoint & (~1);
         cpuu->env.thumb = (entrypoint & 1) == 1 ? 1 : 0;
 
-#endif /* TARGET_ARM */
+        assert(return_reg_index_by_name("r0") == 0 && return_reg_index_by_name("R0") == 0 && return_reg_index_by_name("XXX") == -1);
+        
+        if (qdict_haskey(conf, "init_state")) {
+                QList *init_reg_entries = qobject_to(QList, qdict_get(conf, "init_state"));
+                QListEntry *init_reg_entry;
+                QLIST_FOREACH_ENTRY(init_reg_entries, init_reg_entry) {
+                        QDict* init_reg_dict = qobject_to(QDict, qlist_entry_obj(init_reg_entry));
+                        // get key and value
+                        const QDictEntry * qdict_entry = qdict_first(init_reg_dict);
 
+                        uint32_t reg_val = strtol(
+                        qstring_get_str(qobject_to(QString, qdict_entry->value)),
+                        NULL,
+                        0);
+
+                        int reg_idx = return_reg_index_by_name(qdict_entry->key);
+                        
+                        if ( reg_idx != -1) {
+                                qemu_log_mask(LOG_CONCOLIC_REPLAY, "[%s] init reg(%s) with value(0x%x), idx: %d \n",
+                                        __func__,
+                                        qdict_entry->key, reg_val, 
+                                        reg_idx);
+
+                                cpuu->env.regs[reg_idx] = reg_val;
+                        }
+                }
+        } 
+
+#endif /* TARGET_ARM */
         return cpuu;     
 }
 
@@ -546,11 +645,14 @@ static void concolic_machine_init(MachineState *machine)
 
         assert (machine->kernel_filename != NULL && "a configuration file should be specified!");
 
-        assert (replayFile && "specify an input file");
-
         kernel_filename = machine->kernel_filename;
 
         conf = load_configuration(kernel_filename);
+
+        if (qdict_haskey(conf, "aflPanicAddr")) {
+                QDICT_ASSERT_KEY_TYPE(conf, "aflPanicAddr", QTYPE_QSTRING);
+                aflPanicAddr = strtol(qdict_get_str(conf, "aflPanicAddr"), NULL, 0);
+        }
 
         const QDictEntry * entry = qdict_first(conf);
         while (entry) {
@@ -567,7 +669,11 @@ static void concolic_machine_init(MachineState *machine)
                                 load_flash(qobject_to(QDict, qlist_entry_obj(flash)));
                         }
                 }else if (!strcmp(entry->key, "mmio")) {
-                        configure_mmio(qobject_to(QDict, entry->value));
+                        QList * mmio_entries = qobject_to(QList, entry->value);
+                        QListEntry *mmio_entry;
+                        QLIST_FOREACH_ENTRY(mmio_entries, mmio_entry) {
+                                configure_mmio(qobject_to(QDict, qlist_entry_obj(mmio_entry)));
+                        }
                 }else if (!strcmp(entry->key, "patch")) {
                         QList * patches = qobject_to(QList, entry->value);
                         QListEntry *patch;
@@ -582,41 +688,29 @@ static void concolic_machine_init(MachineState *machine)
                         }
                 }else if (!strcmp(entry->key, "interrupt_firing")){
                         configure_interrupt_firing_strategy(qobject_to(QDict, entry->value));
+                }else if (!strcmp(entry->key, "symbolize_at_pc")) {
+                        load_symbolize_at_pc(qobject_to(QList, entry->value));
                 }
 
                 entry = qdict_next(conf, entry);
         }
 
         print_configuration();
+        assert(replayFile && "specify an input file");
+        
+        /* only one part can be symbolizable */
+        if (is_symbolize_at_pc && is_symbolize_at_mmio) 
+                is_symbolize_at_mmio = false;
 
-        /* This clock doesn't need migration because it is fixed-frequency */
-        // sysclk = clock_new(OBJECT(machine), "SYSCLK");
-        // clock_set_hz(sysclk, SYSCLK_FRQ);
+        /* Initialize the symbolic backend */ 
+        if (is_symbolize_at_mmio || is_symbolize_at_pc) _sym_initialize();
 
-        /* Initialize the symbolic backend */
-        _sym_initialize();
-
-        // armv7m = qdev_new(TYPE_ARMV7M);
-        // qdev_prop_set_uint32(armv7m, "num-irq", 156);
-        // qdev_prop_set_uint8(armv7m, "num-prio-bits", 4);
-        // qdev_prop_set_string(armv7m, "cpu-type", ARM_CPU_TYPE_NAME("cortex-m7"));
-        // qdev_prop_set_bit(armv7m, "enable-bitband", true);
-        // qdev_connect_clock_in(armv7m, "cpuclk", sysclk);
-
-        // object_property_set_link(OBJECT(armv7m), "memory",
-        //                         OBJECT(system_memory), &error_abort);
-
-        // if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(armv7m), NULL)) {
-        //         return;
-        // }
-
-        // assert (machine->kernel_filename != NULL && "a firmware binary should be specified!");
-        // ARMCPU *cpu = ARM_CPU(first_cpu);
-        // cpu->env.regs[15] = entrypoint & (~1);
-        // cpu->env.thumb = (entrypoint & 1) == 1 ? 1 : 0;
-        // armv7m_load_kernel(ARM_CPU(first_cpu),
-        //                 machine->kernel_filename,
-        //                 0, flash_size);
+        /* create a file for coverage */
+        if (covFile) {
+                cov_fp = fopen(covFile, "w");
+                assert (cov_fp && "create a cov file failed");
+                fprintf(cov_fp, "EZCOV VERSION: 1\n");
+        }
 
         create_cpu(machine, conf);
 

@@ -4332,8 +4332,8 @@ ERST
 DEF("replayFile", HAS_ARG, QEMU_OPTION_replayFile, \
     "-replayFile input file for concolic replay \n", QEMU_ARCH_ALL)
 
-DEF("replayConf", HAS_ARG, QEMU_OPTION_replayConf, \
-    "-replayConf configurations for concolic replay \n", QEMU_ARCH_ALL)
+DEF("covFile", HAS_ARG, QEMU_OPTION_covFile, \
+    "-covFile A file saving coverage in the EZCOV format \n", QEMU_ARCH_ALL)
 
 DEF("serial", HAS_ARG, QEMU_OPTION_serial, \
     "-serial dev     redirect the serial port to char device 'dev'\n",

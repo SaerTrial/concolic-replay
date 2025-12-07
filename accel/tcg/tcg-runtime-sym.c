@@ -27,6 +27,10 @@
 #include "exec/helper-info.c.inc"
 #undef  HELPER_H
 
+#include "hw/concolic/utils/mem.h"
+#include "qemu/log.h"
+extern target_long* g_sym_expr;
+
 /* Include the symbolic backend, using void* as expression type. */
 
 #define SymExpr void*
@@ -292,11 +296,7 @@ void *HELPER(sym_bswap)(void *expr, uint64_t length)
     }
 }
 
-#include "qemu/log.h"
-extern uint32_t mmio_start, mmio_end;
-extern target_long* g_sym_expr;
 
-#define DEBUG
 static void *sym_load_guest_internal(CPUArchState *env,
                                      target_ulong addr, void *addr_expr,
                                      uint64_t load_length, uint8_t result_length,
@@ -319,30 +319,39 @@ static void *sym_load_guest_internal(CPUArchState *env,
         _sym_push_path_constraint(
             _sym_build_equal(
                 addr_expr, _sym_build_integer(addr, sizeof(addr) * 8)),
-            true, get_pc(env));     
-    #else
-        
+            true, get_pc(env));             
     #endif
     }
 
     void *memory_expr = NULL;
     void *host_addr = NULL;
 
-    if(addr >= mmio_start && addr < mmio_end) {
+    /* symbolize mmio */
+    if (range_contain_addr(mmio_ranges, addr)) {
         // assume unassigned_mem_read executed beforehand, then we have a pointer in the hash table
 
         assert (g_sym_expr != NULL && "A temp memory to save sym expr is NULL");
+        /* a trick to reuse the same allocated memory in case of many MMIO accesses */
         host_addr = (void*)g_sym_expr;
         memory_expr = _sym_read_memory((uint8_t*)host_addr, load_length, true);
 
-        /* a trick to reuse the same allocated memory without running out of memory in case of many MMIO accesses */
+        /* erase symbolic expr for next use */
         _sym_write_memory(host_addr, load_length, NULL, true);
         qemu_log_mask(LOG_CONCOLIC_REPLAY,
-            "%s: getting memory_expr %s (load_length:0x%lx) at the mmio addr: 0x%x\n", __func__, memory_expr? _sym_expr_to_string(memory_expr) : "empty sym expr", load_length,
+            "[%s] memory_expr %s at the mmio addr: 0x%x\n", __func__, memory_expr? _sym_expr_to_string(memory_expr) : "null",
             (uint32_t)addr);
     }else{
         host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_LOAD, mmu_idx);
         memory_expr = _sym_read_memory((uint8_t*)host_addr, load_length, true);
+
+        /* symbolize a mem read at a specified pc */
+        if (memory_expr == NULL && symbolize_at_pc_array && array_contain_addr(symbolize_at_pc_array, get_pc(env))) {
+            symcc_make_symbolic(host_addr, load_length);
+            memory_expr = _sym_read_memory((uint8_t*)host_addr, load_length, true);
+            qemu_log_mask(LOG_CONCOLIC_REPLAY,
+            "[%s] memory_expr %s of mem read 0x%x at 0x%x\n", __func__, memory_expr? _sym_expr_to_string(memory_expr) : "null",
+            (uint32_t)addr, (uint32_t)get_pc(env));
+        }
     }
 
     if (load_length == result_length || memory_expr == NULL)
@@ -382,19 +391,12 @@ static void sym_store_guest_internal(CPUArchState *env,
             _sym_build_equal(
                 addr_expr, _sym_build_integer(addr, sizeof(addr) * 8)),
                 true, get_pc(env));
-        #else
-            exit(1);
         #endif
     }
 
     void *host_addr = NULL;
 
-    if(addr >= mmio_start && addr < mmio_end) {
-        /*  clean sym expr */
-        _sym_write_memory((uint8_t*)addr, length, NULL, true);
-        
-        return ;
-    }
+    if (range_contain_addr(mmio_ranges, addr)) return ;
 
     host_addr = tlb_vaddr_to_host(env, addr, MMU_DATA_STORE, mmu_idx);
     _sym_write_memory((uint8_t*)host_addr, length, value_expr, true);
@@ -628,8 +630,8 @@ static void *sym_setcond_internal(CPUArchState *env,
 
     void *condition_symbol = build_and_push_path_constraint(env, arg1_expr, arg2_expr, comparison_operator, is_taken);
 
-    printf("%s: [0x%x] concretized sym expr: %s\n",
-                     __func__, (uint32_t)get_pc(env), _sym_expr_to_string(condition_symbol));
+    printf("[%s] pushed path constraint (%s) at TB? (0x%x)\n",
+                     __func__, _sym_expr_to_string(condition_symbol), (uint32_t)get_pc(env));
 
 
     assert(result_bits > 1);
