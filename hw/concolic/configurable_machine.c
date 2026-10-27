@@ -709,6 +709,11 @@ static void concolic_machine_init(MachineState *machine)
         if (covFile) {
                 cov_fp = fopen(covFile, "w");
                 assert (cov_fp && "create a cov file failed");
+                /* Input exhaustion uses _exit(), which does not flush stdio. */
+                if (setvbuf(cov_fp, NULL, _IOLBF, 0) != 0) {
+                        error_report("Could not enable line-buffered coverage output");
+                        exit(EXIT_FAILURE);
+                }
                 fprintf(cov_fp, "EZCOV VERSION: 1\n");
         }
 
