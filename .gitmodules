@@ -47,3 +47,6 @@
 	path = subprojects/symcc-rt
 	url = https://github.com/eurecom-s3/symcc-rt.git
 	branch = main
+[submodule "hooks"]
+	path = hooks
+	url = https://github.com/SaerTrial/firmware-hooks.git
